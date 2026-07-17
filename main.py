@@ -1,6 +1,6 @@
 # main.py
-# Goal: Run the email agent continuously, checking every 60 seconds
-# This is the final combined version of all previous phases
+# Upgraded version — uses PostgreSQL instead of replied_ids.txt
+# Everything else is identical to the version we built in Phase 5
 
 # ── Step 1: Import libraries ───────────────────────────────────────────────────
 
@@ -11,30 +11,18 @@ import email.mime.text
 import email.mime.multipart
 import os
 import time
-import logging          # handles writing to our log file professionally
-from datetime import datetime
+import logging
 from dotenv import load_dotenv
 import anthropic
+import psycopg2  # NEW: PostgreSQL database library
 
 # ── Step 2: Set up logging ─────────────────────────────────────────────────────
 
-# Logging is like print() but it also:
-#   - Adds a timestamp to every message automatically
-#   - Saves messages to a file AND shows them in the terminal at the same time
-#   - Has different levels: INFO (normal), WARNING (something odd), ERROR (problem)
-
 logging.basicConfig(
     level=logging.INFO,
-
-    # %(asctime)s   = timestamp like "2026-07-17 14:30:00"
-    # %(levelname)s = INFO, WARNING, or ERROR
-    # %(message)s   = the actual message we log
     format="%(asctime)s [%(levelname)s] %(message)s",
-
     handlers=[
-        # This writes log messages to a file called agent.log
         logging.FileHandler("agent.log"),
-        # This also shows log messages in the terminal
         logging.StreamHandler()
     ]
 )
@@ -46,13 +34,12 @@ load_dotenv()
 GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
+DATABASE_URL       = os.getenv("DATABASE_URL")  # NEW: database connection string
 
 if not all([GMAIL_ADDRESS, GMAIL_APP_PASSWORD, ANTHROPIC_API_KEY]):
-    logging.error("Missing values in .env file. Please check GMAIL_ADDRESS, GMAIL_APP_PASSWORD, and ANTHROPIC_API_KEY")
+    logging.error("Missing values in .env file")
     exit()
 
-# How many seconds to wait between each inbox check
-# 60 = check once per minute
 CHECK_INTERVAL = 60
 
 # ── Step 4: System prompt ──────────────────────────────────────────────────────
@@ -87,23 +74,87 @@ REPLY:
 No reply needed.
 """
 
-# ── Step 5: Tracking file for replied emails ───────────────────────────────────
+# ── Step 5: Database functions ─────────────────────────────────────────────────
 
-REPLIED_IDS_FILE = "replied_ids.txt"
+def get_db_connection():
+    """Connect to PostgreSQL database."""
+    return psycopg2.connect(DATABASE_URL)
 
-def load_replied_ids():
-    """Read the list of email IDs we have already replied to."""
-    if not os.path.exists(REPLIED_IDS_FILE):
-        return set()
-    with open(REPLIED_IDS_FILE, "r") as f:
-        return set(line.strip() for line in f if line.strip())
+def setup_database():
+    """
+    Create the tables we need if they don't exist yet.
+    This runs once every time the agent starts.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-def save_replied_id(email_id):
-    """Add a new email ID to our tracking file."""
-    with open(REPLIED_IDS_FILE, "a") as f:
-        f.write(email_id + "\n")
+    # Table 1: tracks which emails we already replied to
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS replied_emails (
+            id SERIAL PRIMARY KEY,
+            email_id VARCHAR(255) UNIQUE NOT NULL,
+            replied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
-# ── Step 6: Claude client and reply function ───────────────────────────────────
+    # Table 2: stores full email history
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS email_history (
+            id SERIAL PRIMARY KEY,
+            sender VARCHAR(500),
+            subject VARCHAR(500),
+            body TEXT,
+            category VARCHAR(50),
+            reply_sent TEXT,
+            status VARCHAR(50) DEFAULT 'sent',
+            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    logging.info("Database ready")
+
+def has_replied(email_id):
+    """Check if we already replied to this email ID."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM replied_emails WHERE email_id = %s",
+        (email_id,)
+    )
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return result is not None
+
+def mark_as_replied(email_id):
+    """Mark an email ID as replied in the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO replied_emails (email_id) VALUES (%s) ON CONFLICT DO NOTHING",
+        (email_id,)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def save_email_history(sender, subject, body, category, reply, status):
+    """Save a processed email to the history table."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO email_history 
+        (sender, subject, body, category, reply_sent, status)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (sender, subject, body[:2000], category, reply, status))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# ── Step 6: Claude functions ───────────────────────────────────────────────────
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -156,28 +207,15 @@ def send_reply(to_address, original_subject, reply_body):
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         server.send_message(msg)
 
-# ── Step 8: Process inbox function ────────────────────────────────────────────
+# ── Step 8: Main check function ────────────────────────────────────────────────
 
 def check_and_reply():
-    """
-    One full cycle of the agent:
-    1. Connect to Gmail
-    2. Find unread emails
-    3. For each one — analyze with Claude and send a reply
-    4. Disconnect
-    """
-
-    # Load replied IDs fresh each cycle
-    # (in case another process added IDs while we were sleeping)
-    replied_ids = load_replied_ids()
-
+    """One full cycle — connect, read, analyze, reply, disconnect."""
     try:
-        # Connect to Gmail
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         mail.select("INBOX", readonly=False)
 
-        # Search for unread emails
         status, messages = mail.search(None, "UNSEEN")
         email_ids = messages[0].split()
 
@@ -188,16 +226,14 @@ def check_and_reply():
 
         logging.info(f"Found {len(email_ids)} unread email(s)")
 
-        # Process each email
         for email_id in reversed(email_ids[-5:]):
             email_id_str = email_id.decode("utf-8")
 
-            # Skip if already replied
-            if email_id_str in replied_ids:
-                logging.info(f"Skipping email {email_id_str} — already replied")
+            # Check database instead of text file
+            if has_replied(email_id_str):
+                logging.info(f"Skipping {email_id_str} — already replied")
                 continue
 
-            # Fetch the email
             status, msg_data = mail.fetch(email_id, "(RFC822)")
             raw_email = msg_data[0][1]
             msg = email.message_from_bytes(raw_email)
@@ -205,19 +241,16 @@ def check_and_reply():
             sender  = msg.get("From", "")
             subject = msg.get("Subject", "No subject")
 
-            # Extract just the email address
             if "<" in sender:
                 sender_email = sender.split("<")[1].replace(">", "").strip()
             else:
                 sender_email = sender.strip()
 
-            # Safety check: never reply to ourselves
             if sender_email.lower() == GMAIL_ADDRESS.lower():
-                logging.info(f"Skipping own email — {sender_email}")
-                save_replied_id(email_id_str)
+                logging.info(f"Skipping own email")
+                mark_as_replied(email_id_str)
                 continue
 
-            # Get body
             body = ""
             if msg.is_multipart():
                 for part in msg.walk():
@@ -229,75 +262,66 @@ def check_and_reply():
 
             body = body[:2000]
 
-            logging.info(f"Processing email from {sender_email} — Subject: {subject}")
+            logging.info(f"Processing: {sender_email} — {subject}")
 
-            # Get Claude's reply
             try:
-                claude_text      = get_claude_reply(sender_email, subject, body)
-                category, reply  = parse_claude_response(claude_text)
-                logging.info(f"Claude classified as: {category}")
+                claude_text     = get_claude_reply(sender_email, subject, body)
+                category, reply = parse_claude_response(claude_text)
+                logging.info(f"Category: {category}")
 
-                # Skip spam
                 if category == "SPAM" or reply == "No reply needed.":
-                    logging.info(f"Skipping spam email from {sender_email}")
-                    save_replied_id(email_id_str)
+                    logging.info("Skipping spam")
+                    save_email_history(sender_email, subject, body, category, "", "skipped_spam")
+                    mark_as_replied(email_id_str)
                     continue
 
-                # Send the reply
                 send_reply(sender_email, subject, reply)
                 logging.info(f"Reply sent to {sender_email}")
 
-                # Mark as replied
-                save_replied_id(email_id_str)
+                # Save to database history
+                save_email_history(sender_email, subject, body, category, reply, "sent")
+                mark_as_replied(email_id_str)
 
-                # Wait between emails
                 time.sleep(2)
 
-            # If Claude or sending fails, log the error but don't crash
             except Exception as e:
-                logging.error(f"Failed to process email from {sender_email}: {e}")
+                logging.error(f"Failed to process email: {e}")
                 continue
 
         mail.logout()
 
-    # If Gmail connection fails, log the error but don't crash
     except Exception as e:
         logging.error(f"Gmail connection error: {e}")
 
-# ── Step 9: The main loop ──────────────────────────────────────────────────────
+# ── Step 9: Main loop ──────────────────────────────────────────────────────────
 
 def main():
-    """
-    Run the agent forever.
-    Every CHECK_INTERVAL seconds, check for new emails and reply.
-    Press Ctrl+C to stop.
-    """
     logging.info("=" * 50)
     logging.info("Email Agent Started")
-    logging.info(f"Checking inbox every {CHECK_INTERVAL} seconds")
+    logging.info(f"Checking every {CHECK_INTERVAL} seconds")
     logging.info("Press Ctrl+C to stop")
     logging.info("=" * 50)
 
-    # This loop runs forever until you press Ctrl+C
+    # Set up database tables on startup
+    if DATABASE_URL:
+        setup_database()
+    else:
+        logging.warning("No DATABASE_URL found — running without database")
+
     while True:
         try:
             logging.info("Checking inbox...")
             check_and_reply()
-            logging.info(f"Sleeping for {CHECK_INTERVAL} seconds...")
+            logging.info(f"Sleeping {CHECK_INTERVAL} seconds...")
             time.sleep(CHECK_INTERVAL)
 
-        # Ctrl+C pressed — exit cleanly
         except KeyboardInterrupt:
-            logging.info("Agent stopped by user. Goodbye!")
+            logging.info("Agent stopped. Goodbye!")
             break
 
-        # Any other unexpected error — log it and keep running
         except Exception as e:
             logging.error(f"Unexpected error: {e}")
-            logging.info("Recovering... will try again in 60 seconds")
             time.sleep(CHECK_INTERVAL)
 
-# This line means: only run main() if we run THIS file directly
-# (not if another file imports it)
 if __name__ == "__main__":
     main()

@@ -21,3 +21,13 @@
 2026-07-17 15:17:29,987 [INFO] Reply sent to prashantsubedi718@gmail.com
 2026-07-17 15:17:32,253 [INFO] Sleeping for 60 seconds...
 2026-07-17 15:18:18,467 [INFO] Agent stopped by user. Goodbye!
+2026-07-17 16:26:09,660 [INFO] ==================================================
+2026-07-17 16:26:09,660 [INFO] Email Agent Started
+2026-07-17 16:26:09,660 [INFO] Checking every 60 seconds
+2026-07-17 16:26:09,660 [INFO] Press Ctrl+C to stop
+2026-07-17 16:26:09,661 [INFO] ==================================================
+2026-07-17 16:26:09,661 [WARNING] No DATABASE_URL found — running without database
+2026-07-17 16:26:09,661 [INFO] Checking inbox...
+2026-07-17 16:26:11,514 [INFO] No new emails found
+2026-07-17 16:26:11,861 [INFO] Sleeping 60 seconds...
+2026-07-17 16:26:21,403 [INFO] Agent stopped. Goodbye!
