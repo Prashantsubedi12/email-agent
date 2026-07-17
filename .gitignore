@@ -7,3 +7,6 @@ venv/
 # Python cache files (auto-generated, not needed)
 __pycache__/
 *.pyc
+
+email_agent.db
+agent.log
