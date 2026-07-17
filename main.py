@@ -1,6 +1,6 @@
 # main.py
-# Upgraded version — uses PostgreSQL instead of replied_ids.txt
-# Everything else is identical to the version we built in Phase 5
+# Upgraded version — uses SQLite database (built into Python, no install needed)
+# Database is saved as email_agent.db in your project folder
 
 # ── Step 1: Import libraries ───────────────────────────────────────────────────
 
@@ -12,9 +12,9 @@ import email.mime.multipart
 import os
 import time
 import logging
+import sqlite3      # NEW: built into Python, no installation needed
 from dotenv import load_dotenv
 import anthropic
-import psycopg2  # NEW: PostgreSQL database library
 
 # ── Step 2: Set up logging ─────────────────────────────────────────────────────
 
@@ -34,13 +34,13 @@ load_dotenv()
 GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
-DATABASE_URL       = os.getenv("DATABASE_URL")  # NEW: database connection string
 
 if not all([GMAIL_ADDRESS, GMAIL_APP_PASSWORD, ANTHROPIC_API_KEY]):
     logging.error("Missing values in .env file")
     exit()
 
-CHECK_INTERVAL = 60
+CHECK_INTERVAL  = 60
+DATABASE_FILE   = "email_agent.db"  # this file will appear in your project folder
 
 # ── Step 4: System prompt ──────────────────────────────────────────────────────
 
@@ -74,16 +74,22 @@ REPLY:
 No reply needed.
 """
 
-# ── Step 5: Database functions ─────────────────────────────────────────────────
+# ── Step 5: Database setup ─────────────────────────────────────────────────────
 
 def get_db_connection():
-    """Connect to PostgreSQL database."""
-    return psycopg2.connect(DATABASE_URL)
+    """
+    Connect to SQLite database.
+    If email_agent.db doesn't exist yet, SQLite creates it automatically.
+    """
+    conn = sqlite3.connect(DATABASE_FILE)
+    # This makes rows behave like dictionaries — easier to work with
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def setup_database():
     """
-    Create the tables we need if they don't exist yet.
-    This runs once every time the agent starts.
+    Create tables if they don't exist.
+    Runs once every time the agent starts.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -91,67 +97,67 @@ def setup_database():
     # Table 1: tracks which emails we already replied to
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS replied_emails (
-            id SERIAL PRIMARY KEY,
-            email_id VARCHAR(255) UNIQUE NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_id TEXT UNIQUE NOT NULL,
             replied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # Table 2: stores full email history
+    # Table 2: full history of every email we processed
+    # This is what powers the dashboard later
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS email_history (
-            id SERIAL PRIMARY KEY,
-            sender VARCHAR(500),
-            subject VARCHAR(500),
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender TEXT,
+            subject TEXT,
             body TEXT,
-            category VARCHAR(50),
+            category TEXT,
             reply_sent TEXT,
-            status VARCHAR(50) DEFAULT 'sent',
+            status TEXT DEFAULT 'sent',
             processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     conn.commit()
-    cursor.close()
     conn.close()
-    logging.info("Database ready")
+    logging.info("Database ready — email_agent.db")
 
 def has_replied(email_id):
-    """Check if we already replied to this email ID."""
+    """Check if we already replied to this email."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id FROM replied_emails WHERE email_id = %s",
+        "SELECT id FROM replied_emails WHERE email_id = ?",
         (email_id,)
     )
     result = cursor.fetchone()
-    cursor.close()
     conn.close()
     return result is not None
 
 def mark_as_replied(email_id):
-    """Mark an email ID as replied in the database."""
+    """Save this email ID so we never reply to it again."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO replied_emails (email_id) VALUES (%s) ON CONFLICT DO NOTHING",
+        "INSERT OR IGNORE INTO replied_emails (email_id) VALUES (?)",
         (email_id,)
     )
     conn.commit()
-    cursor.close()
     conn.close()
 
 def save_email_history(sender, subject, body, category, reply, status):
-    """Save a processed email to the history table."""
+    """
+    Save a processed email to history.
+    This is what the dashboard will read and display.
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO email_history 
         (sender, subject, body, category, reply_sent, status)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (?, ?, ?, ?, ?, ?)
     """, (sender, subject, body[:2000], category, reply, status))
     conn.commit()
-    cursor.close()
     conn.close()
 
 # ── Step 6: Claude functions ───────────────────────────────────────────────────
@@ -159,7 +165,7 @@ def save_email_history(sender, subject, body, category, reply, status):
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 def get_claude_reply(sender, subject, body):
-    """Send email content to Claude and return its response."""
+    """Send email to Claude and get back classification + reply."""
     user_message = f"""
 Please analyze this email and write a reply.
 
@@ -177,7 +183,7 @@ BODY:
     return response.content[0].text
 
 def parse_claude_response(claude_text):
-    """Split Claude's response into category and reply text."""
+    """Split Claude's response into category and reply."""
     category = "OTHER"
     reply    = ""
     lines    = claude_text.strip().split("\n")
@@ -191,10 +197,10 @@ def parse_claude_response(claude_text):
 
     return category, reply
 
-# ── Step 7: Send email function ────────────────────────────────────────────────
+# ── Step 7: Send email ─────────────────────────────────────────────────────────
 
 def send_reply(to_address, original_subject, reply_body):
-    """Send an email reply via Gmail SMTP."""
+    """Send a reply email via Gmail SMTP."""
     msg = email.mime.multipart.MIMEMultipart()
     msg["From"]    = GMAIL_ADDRESS
     msg["To"]      = to_address
@@ -210,7 +216,7 @@ def send_reply(to_address, original_subject, reply_body):
 # ── Step 8: Main check function ────────────────────────────────────────────────
 
 def check_and_reply():
-    """One full cycle — connect, read, analyze, reply, disconnect."""
+    """One full cycle — read inbox, analyze, reply, save to database."""
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -229,7 +235,6 @@ def check_and_reply():
         for email_id in reversed(email_ids[-5:]):
             email_id_str = email_id.decode("utf-8")
 
-            # Check database instead of text file
             if has_replied(email_id_str):
                 logging.info(f"Skipping {email_id_str} — already replied")
                 continue
@@ -247,7 +252,7 @@ def check_and_reply():
                 sender_email = sender.strip()
 
             if sender_email.lower() == GMAIL_ADDRESS.lower():
-                logging.info(f"Skipping own email")
+                logging.info("Skipping own email")
                 mark_as_replied(email_id_str)
                 continue
 
@@ -271,17 +276,21 @@ def check_and_reply():
 
                 if category == "SPAM" or reply == "No reply needed.":
                     logging.info("Skipping spam")
-                    save_email_history(sender_email, subject, body, category, "", "skipped_spam")
+                    save_email_history(
+                        sender_email, subject, body,
+                        category, "", "skipped_spam"
+                    )
                     mark_as_replied(email_id_str)
                     continue
 
                 send_reply(sender_email, subject, reply)
                 logging.info(f"Reply sent to {sender_email}")
 
-                # Save to database history
-                save_email_history(sender_email, subject, body, category, reply, "sent")
+                save_email_history(
+                    sender_email, subject, body,
+                    category, reply, "sent"
+                )
                 mark_as_replied(email_id_str)
-
                 time.sleep(2)
 
             except Exception as e:
@@ -303,10 +312,7 @@ def main():
     logging.info("=" * 50)
 
     # Set up database tables on startup
-    if DATABASE_URL:
-        setup_database()
-    else:
-        logging.warning("No DATABASE_URL found — running without database")
+    setup_database()
 
     while True:
         try:

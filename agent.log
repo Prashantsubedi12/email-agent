@@ -31,3 +31,25 @@
 2026-07-17 16:26:11,514 [INFO] No new emails found
 2026-07-17 16:26:11,861 [INFO] Sleeping 60 seconds...
 2026-07-17 16:26:21,403 [INFO] Agent stopped. Goodbye!
+2026-07-17 17:08:01,206 [INFO] ==================================================
+2026-07-17 17:08:01,207 [INFO] Email Agent Started
+2026-07-17 17:08:01,207 [INFO] Checking every 60 seconds
+2026-07-17 17:08:01,207 [INFO] Press Ctrl+C to stop
+2026-07-17 17:08:01,207 [INFO] ==================================================
+2026-07-17 17:08:01,209 [INFO] Database ready — email_agent.db
+2026-07-17 17:08:01,209 [INFO] Checking inbox...
+2026-07-17 17:08:02,664 [ERROR] Gmail connection error: b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)'
+2026-07-17 17:08:02,665 [INFO] Sleeping 60 seconds...
+2026-07-17 17:08:09,534 [INFO] Agent stopped. Goodbye!
+2026-07-17 17:18:00,180 [ERROR] Missing values in .env file
+2026-07-17 17:21:07,252 [ERROR] Missing values in .env file
+2026-07-17 17:23:52,492 [INFO] ==================================================
+2026-07-17 17:23:52,493 [INFO] Email Agent Started
+2026-07-17 17:23:52,493 [INFO] Checking every 60 seconds
+2026-07-17 17:23:52,493 [INFO] Press Ctrl+C to stop
+2026-07-17 17:23:52,493 [INFO] ==================================================
+2026-07-17 17:23:52,494 [INFO] Database ready — email_agent.db
+2026-07-17 17:23:52,494 [INFO] Checking inbox...
+2026-07-17 17:23:54,197 [INFO] No new emails found
+2026-07-17 17:23:54,428 [INFO] Sleeping 60 seconds...
+2026-07-17 17:23:59,482 [INFO] Agent stopped. Goodbye!
