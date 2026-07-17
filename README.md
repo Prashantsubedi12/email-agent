@@ -185,7 +185,7 @@ Press `Ctrl+C` in either terminal to stop.
 ## 👤 Author
 
 **Prashant Subedi**
-IT Student — 産業技術短期大学, Osaka, Japan
+IT Student — 産業技術短期大学, Hyogo, Japan
 Freelance Photographer & Web Developer
 GitHub: [@Prashantsubedi12](https://github.com/Prashantsubedi12)
 Portfolio: [photography-site-bay-three.vercel.app](https://photography-site-bay-three.vercel.app)
