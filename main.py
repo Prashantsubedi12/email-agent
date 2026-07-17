@@ -1,8 +1,7 @@
 # main.py
-# Upgraded version — uses SQLite database (built into Python, no install needed)
-# Database is saved as email_agent.db in your project folder
+# Final version — real portfolio context + SMS notifications + SQLite database
 
-# ── Step 1: Import libraries ───────────────────────────────────────────────────
+# ── Imports ────────────────────────────────────────────────────────────────────
 
 import imaplib
 import smtplib
@@ -12,11 +11,12 @@ import email.mime.multipart
 import os
 import time
 import logging
-import sqlite3      # NEW: built into Python, no installation needed
+import sqlite3
 from dotenv import load_dotenv
 import anthropic
 
-# ── Step 2: Set up logging ─────────────────────────────────────────────────────
+
+# ── Logging ────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,74 +27,127 @@ logging.basicConfig(
     ]
 )
 
-# ── Step 3: Load credentials ───────────────────────────────────────────────────
+# ── Credentials ────────────────────────────────────────────────────────────────
 
 load_dotenv()
 
-GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
-ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
+GMAIL_ADDRESS        = os.getenv("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD   = os.getenv("GMAIL_APP_PASSWORD")
+ANTHROPIC_API_KEY    = os.getenv("ANTHROPIC_API_KEY")
+TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_FROM_NUMBER   = os.getenv("TWILIO_FROM_NUMBER")
+MY_PHONE_NUMBER      = os.getenv("MY_PHONE_NUMBER")
 
 if not all([GMAIL_ADDRESS, GMAIL_APP_PASSWORD, ANTHROPIC_API_KEY]):
     logging.error("Missing values in .env file")
     exit()
 
-CHECK_INTERVAL  = 60
-DATABASE_FILE   = "email_agent.db"  # this file will appear in your project folder
+CHECK_INTERVAL = 60
+DATABASE_FILE  = "email_agent.db"
 
-# ── Step 4: System prompt ──────────────────────────────────────────────────────
+# ── System Prompt — Real Portfolio Context ─────────────────────────────────────
 
 SYSTEM_PROMPT = """
-You are a professional email assistant for a freelance photographer and IT student 
-based in Osaka, Japan. Your job is to help manage incoming emails.
+You are the email assistant for Prashant Subedi, a bilingual freelance photographer 
+and web developer based in Osaka, Japan.
 
-When you receive an email, you must do TWO things:
+== ABOUT PRASHANT ==
+- Full name: Prashant Subedi
+- Brand name: Prashant Captures
+- Age: 20 years old
+- Based in: Osaka, Japan
+- Languages: English, Japanese, Nepali, Hindi (fully fluent in all four)
+- Camera: Sony a6400 with Tamron 17-70mm f/2.8
+- Instagram/TikTok: @prashantsub12
+- Portfolio: https://photography-site-bay-three.vercel.app
+- Email: prashant.captures.photo@gmail.com
 
-1. CLASSIFY the email into exactly one of these categories:
-   - INQUIRY: Someone asking about services, prices, or availability
-   - COMPLAINT: Someone expressing dissatisfaction or reporting a problem  
-   - SPAM: Promotional emails, scams, or irrelevant messages
-   - PERSONAL: Messages from friends, family, or personal contacts
-   - OTHER: Anything that doesn't fit the above categories
+== PHOTOGRAPHY SERVICES & PRICING ==
+1. Portrait Session — ¥8,000〜¥15,000
+   - 1-on-1 outdoor portraits at Osaka locations
+   - 1-2 hours shooting
+   - 20+ edited photos delivered within 5 days
 
-2. WRITE A REPLY that is:
-   - Professional but friendly in tone
-   - Short and to the point (3-5 sentences maximum)
-   - Appropriate for the category (don't reply to spam)
-   - Written as if you are Prashant himself
+2. Tourist Photo Session — ¥12,000〜¥20,000 (MOST POPULAR)
+   - Walk Osaka together, shoot at iconic spots
+   - 2-3 hours walking and shooting
+   - 30+ edited photos
+   - Perfect for foreign visitors — bilingual (EN/JP)
 
-Format your response EXACTLY like this — do not change the format:
-CATEGORY: [category name]
+3. Couple Session — ¥12,000〜¥25,000
+   - Outdoor romantic sessions
+   - Osaka Castle, riverside walks, neon-lit streets at night
+   - 1-2 hours, 25+ edited photos
+
+4. Event Coverage — ¥10,000〜¥30,000 per event
+   - Concerts, live events, sports, festivals, birthday parties
+   - Full event coverage, 50+ edited photos, quick turnaround
+
+Additional notes on pricing:
+- All prices are starting points — final price depends on duration and location
+- Bilingual sessions (English + Japanese) at no extra charge
+- Photos delivered via Google Drive within 5 days
+
+== WEB DEVELOPMENT SERVICES ==
+Prashant is also a web developer. He builds:
+- Small business websites (restaurants, shops, local SMEs)
+- Bilingual websites (English + Japanese)
+- Portfolio sites for photographers and creatives
+- AI automation tools (like this email agent)
+Tech stack: HTML, CSS, JavaScript, SvelteKit, Python, FastAPI
+Portfolio: https://photography-site-bay-three.vercel.app/it-portfolio/
+
+== PRASHANT'S PERSONALITY & TONE ==
+- Warm, friendly, and genuine — never stiff or corporate
+- Bilingual — reply in the same language the client used
+- If email is in Japanese → reply in Japanese
+- If email is in English → reply in English
+- If email mixes both → reply in English with Japanese phrases where natural
+- Always honest about availability and pricing
+- Mentions specific Osaka locations when relevant
+- Signs off as "Prashant" not "Prashant Captures"
+
+== YOUR JOB ==
+When you receive an email, do TWO things:
+
+1. CLASSIFY into exactly one category:
+   - INQUIRY: Questions about photography services, pricing, booking, availability, web dev services
+   - BOOKING: Someone ready to book a specific session with date/time
+   - COMPLAINT: Dissatisfaction or problem with a past session
+   - SPAM: Promotional emails, scams, irrelevant messages
+   - PERSONAL: Messages from friends or family
+   - OTHER: Anything else
+
+2. WRITE A REPLY that:
+   - Sounds like Prashant himself wrote it — warm and genuine
+   - Answers the specific question asked
+   - Mentions relevant pricing if they asked about services
+   - Suggests a specific next step (check portfolio, book via contact form, etc.)
+   - Is 3-5 sentences maximum
+   - Is in the same language as the original email
+
+Format your response EXACTLY like this:
+CATEGORY: [category]
 REPLY:
-[your reply here]
+[reply text here]
 
-If the email is SPAM, use this exact reply:
+For SPAM only:
 CATEGORY: SPAM
 REPLY:
 No reply needed.
 """
 
-# ── Step 5: Database setup ─────────────────────────────────────────────────────
+# ── Database ───────────────────────────────────────────────────────────────────
 
 def get_db_connection():
-    """
-    Connect to SQLite database.
-    If email_agent.db doesn't exist yet, SQLite creates it automatically.
-    """
     conn = sqlite3.connect(DATABASE_FILE)
-    # This makes rows behave like dictionaries — easier to work with
     conn.row_factory = sqlite3.Row
     return conn
 
 def setup_database():
-    """
-    Create tables if they don't exist.
-    Runs once every time the agent starts.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
-
-    # Table 1: tracks which emails we already replied to
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS replied_emails (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,9 +155,6 @@ def setup_database():
             replied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-
-    # Table 2: full history of every email we processed
-    # This is what powers the dashboard later
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS email_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,55 +167,78 @@ def setup_database():
             processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-
     conn.commit()
     conn.close()
     logging.info("Database ready — email_agent.db")
 
 def has_replied(email_id):
-    """Check if we already replied to this email."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id FROM replied_emails WHERE email_id = ?",
-        (email_id,)
-    )
+    cursor.execute("SELECT id FROM replied_emails WHERE email_id = ?", (email_id,))
     result = cursor.fetchone()
     conn.close()
     return result is not None
 
 def mark_as_replied(email_id):
-    """Save this email ID so we never reply to it again."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR IGNORE INTO replied_emails (email_id) VALUES (?)",
-        (email_id,)
-    )
+    cursor.execute("INSERT OR IGNORE INTO replied_emails (email_id) VALUES (?)", (email_id,))
     conn.commit()
     conn.close()
 
 def save_email_history(sender, subject, body, category, reply, status):
-    """
-    Save a processed email to history.
-    This is what the dashboard will read and display.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO email_history 
+        INSERT INTO email_history
         (sender, subject, body, category, reply_sent, status)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (sender, subject, body[:2000], category, reply, status))
     conn.commit()
     conn.close()
 
-# ── Step 6: Claude functions ───────────────────────────────────────────────────
+# ── SMS Notification ───────────────────────────────────────────────────────────
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+def send_sms_notification(sender, subject, category):
+    """
+    Send an email notification to Prashant's personal Gmail
+    when an important inquiry arrives.
+    Gmail app on phone will notify instantly.
+    """
+    try:
+        msg = email.mime.multipart.MIMEMultipart()
+        msg["From"]    = GMAIL_ADDRESS
+        msg["To"]      = "prashantsubedi718@gmail.com"
+        msg["Subject"] = f"📸 New {category} from {sender}"
+
+        body = f"""
+New {category} received!
+
+From: {sender}
+Subject: {subject}
+
+Auto-reply has been sent.
+Check prashant.captures.photo@gmail.com for details.
+        """
+
+        msg.attach(email.mime.text.MIMEText(body, "plain"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.send_message(msg)
+
+        logging.info(f"Email notification sent to prashantsubedi718@gmail.com")
+
+    except Exception as e:
+        logging.error(f"Notification failed: {e}")
+
+# ── Claude ─────────────────────────────────────────────────────────────────────
+
+claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 def get_claude_reply(sender, subject, body):
-    """Send email to Claude and get back classification + reply."""
     user_message = f"""
 Please analyze this email and write a reply.
 
@@ -174,7 +247,7 @@ SUBJECT: {subject}
 BODY:
 {body}
 """
-    response = client.messages.create(
+    response = claude_client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
         system=SYSTEM_PROMPT,
@@ -183,40 +256,34 @@ BODY:
     return response.content[0].text
 
 def parse_claude_response(claude_text):
-    """Split Claude's response into category and reply."""
     category = "OTHER"
     reply    = ""
     lines    = claude_text.strip().split("\n")
-
     for i, line in enumerate(lines):
         if line.startswith("CATEGORY:"):
             category = line.replace("CATEGORY:", "").strip()
         if line.startswith("REPLY:"):
             reply = "\n".join(lines[i+1:]).strip()
             break
-
     return category, reply
 
-# ── Step 7: Send email ─────────────────────────────────────────────────────────
+# ── Send Email ─────────────────────────────────────────────────────────────────
 
 def send_reply(to_address, original_subject, reply_body):
-    """Send a reply email via Gmail SMTP."""
     msg = email.mime.multipart.MIMEMultipart()
     msg["From"]    = GMAIL_ADDRESS
     msg["To"]      = to_address
     msg["Subject"] = f"Re: {original_subject}"
     msg.attach(email.mime.text.MIMEText(reply_body, "plain"))
-
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.ehlo()
         server.starttls()
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         server.send_message(msg)
 
-# ── Step 8: Main check function ────────────────────────────────────────────────
+# ── Main Check ─────────────────────────────────────────────────────────────────
 
 def check_and_reply():
-    """One full cycle — read inbox, analyze, reply, save to database."""
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -276,21 +343,20 @@ def check_and_reply():
 
                 if category == "SPAM" or reply == "No reply needed.":
                     logging.info("Skipping spam")
-                    save_email_history(
-                        sender_email, subject, body,
-                        category, "", "skipped_spam"
-                    )
+                    save_email_history(sender_email, subject, body, category, "", "skipped_spam")
                     mark_as_replied(email_id_str)
                     continue
 
                 send_reply(sender_email, subject, reply)
                 logging.info(f"Reply sent to {sender_email}")
 
-                save_email_history(
-                    sender_email, subject, body,
-                    category, reply, "sent"
-                )
+                save_email_history(sender_email, subject, body, category, reply, "sent")
                 mark_as_replied(email_id_str)
+
+                # Send SMS only for inquiries and bookings
+                if category in ["INQUIRY", "BOOKING"]:
+                    send_sms_notification(sender_email, subject, category)
+
                 time.sleep(2)
 
             except Exception as e:
@@ -302,16 +368,16 @@ def check_and_reply():
     except Exception as e:
         logging.error(f"Gmail connection error: {e}")
 
-# ── Step 9: Main loop ──────────────────────────────────────────────────────────
+# ── Main Loop ──────────────────────────────────────────────────────────────────
 
 def main():
     logging.info("=" * 50)
-    logging.info("Email Agent Started")
+    logging.info("Prashant Captures — Email Agent Started")
+    logging.info(f"Monitoring: {GMAIL_ADDRESS}")
     logging.info(f"Checking every {CHECK_INTERVAL} seconds")
     logging.info("Press Ctrl+C to stop")
     logging.info("=" * 50)
 
-    # Set up database tables on startup
     setup_database()
 
     while True:
