@@ -316,14 +316,7 @@ def check_and_reply():
                 mark_as_replied(email_id_str)
                 continue
 
-            # Skip noreply and automated addresses
-            skip_patterns = ["noreply", "no-reply", "donotreply", "mailer-daemon", "postmaster"]
-            if any(pattern in sender_email.lower() for pattern in skip_patterns):
-                logging.info(f"Skipping automated email from {sender_email}")
-                mark_as_replied(email_id_str)
-                continue
-
-            # Get body
+            # Get body first — needed to detect Formspree before noreply skip
             body = ""
             if msg.is_multipart():
                 for part in msg.walk():
@@ -335,17 +328,13 @@ def check_and_reply():
 
             body = body[:2000]
 
-            # ── Formspree handler ──────────────────────────────────────────────
-            # When someone submits your contact form, Formspree emails you
-            # We extract the real client email and message from the body
-
+            # ── Formspree handler — runs BEFORE noreply skip ───────────────────
             real_sender_email = sender_email
             real_body         = body
 
             if "formspree" in body.lower() or "submitted a form" in body.lower():
                 logging.info("Detected Formspree contact form submission")
 
-                # Extract real client email
                 email_match = re.search(
                     r'email[:\s]+([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})',
                     body, re.IGNORECASE
@@ -365,6 +354,14 @@ def check_and_reply():
                 real_body   = f"Name: {client_name}\nMessage: {client_msg}"
                 subject     = f"Contact Form: {subject}"
 
+            else:
+                # Only skip noreply for non-Formspree emails
+                skip_patterns = ["noreply", "no-reply", "donotreply", "mailer-daemon", "postmaster"]
+                if any(pattern in sender_email.lower() for pattern in skip_patterns):
+                    logging.info(f"Skipping automated email from {sender_email}")
+                    mark_as_replied(email_id_str)
+                    continue
+
             logging.info(f"Processing: {real_sender_email} — {subject}")
 
             try:
@@ -372,19 +369,21 @@ def check_and_reply():
                 category, reply = parse_claude_response(claude_text)
                 logging.info(f"Category: {category}")
 
+                # Skip spam
                 if category == "SPAM" or reply == "No reply needed.":
                     logging.info("Skipping spam")
-                save_email_history(real_sender_email, subject, real_body, category, "", "skipped_spam")
-                mark_as_replied(email_id_str)
-                continue
+                    save_email_history(real_sender_email, subject, real_body, category, "", "skipped_spam")
+                    mark_as_replied(email_id_str)
+                    continue
 
-                # Hold web dev inquiries — don't reply yet
+                # Hold web dev inquiries — reply manually later
                 if category == "WEB_DEV":
                     logging.info(f"Web dev inquiry from {real_sender_email} — holding, no reply sent")
                     save_email_history(real_sender_email, subject, real_body, category, "", "held_web_dev")
                     mark_as_replied(email_id_str)
                     continue
 
+                # Send reply for everything else
                 send_reply(real_sender_email, subject, reply)
                 logging.info(f"Reply sent to {real_sender_email}")
 
