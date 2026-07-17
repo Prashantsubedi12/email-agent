@@ -1,0 +1,23 @@
+2026-07-17 15:15:13,455 [INFO] ==================================================
+2026-07-17 15:15:13,456 [INFO] Email Agent Started
+2026-07-17 15:15:13,456 [INFO] Checking inbox every 60 seconds
+2026-07-17 15:15:13,456 [INFO] Press Ctrl+C to stop
+2026-07-17 15:15:13,456 [INFO] ==================================================
+2026-07-17 15:15:13,456 [INFO] Checking inbox...
+2026-07-17 15:15:14,988 [INFO] No new emails found
+2026-07-17 15:15:15,232 [INFO] Sleeping for 60 seconds...
+2026-07-17 15:16:15,232 [INFO] Checking inbox...
+2026-07-17 15:16:16,784 [INFO] No new emails found
+2026-07-17 15:16:17,040 [INFO] Sleeping for 60 seconds...
+2026-07-17 15:17:17,041 [INFO] Checking inbox...
+2026-07-17 15:17:18,697 [INFO] Found 2 unread email(s)
+2026-07-17 15:17:19,033 [INFO] Processing email from prashantsubedi718@gmail.com — Subject: Re: Wedding Photography Inquiry
+2026-07-17 15:17:21,169 [INFO] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-17 15:17:21,180 [INFO] Claude classified as: INQUIRY
+2026-07-17 15:17:23,204 [INFO] Reply sent to prashantsubedi718@gmail.com
+2026-07-17 15:17:25,913 [INFO] Processing email from prashantsubedi718@gmail.com — Subject: Re: Wedding Photography Inquiry
+2026-07-17 15:17:27,601 [INFO] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-17 15:17:27,602 [INFO] Claude classified as: INQUIRY
+2026-07-17 15:17:29,987 [INFO] Reply sent to prashantsubedi718@gmail.com
+2026-07-17 15:17:32,253 [INFO] Sleeping for 60 seconds...
+2026-07-17 15:18:18,467 [INFO] Agent stopped by user. Goodbye!

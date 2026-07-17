@@ -1,0 +1,9 @@
+# Never commit these to GitHub
+.env
+
+# Virtual environment folder (too large, not needed)
+venv/
+
+# Python cache files (auto-generated, not needed)
+__pycache__/
+*.pyc
