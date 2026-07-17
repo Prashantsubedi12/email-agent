@@ -1,7 +1,5 @@
 # main.py
-# Final version — real portfolio context + SMS notifications + SQLite database
-
-# ── Imports ────────────────────────────────────────────────────────────────────
+# Final version — Formspree support + Japanese replies + noreply skip + notifications
 
 import imaplib
 import smtplib
@@ -9,12 +7,12 @@ import email
 import email.mime.text
 import email.mime.multipart
 import os
+import re
 import time
 import logging
 import sqlite3
 from dotenv import load_dotenv
 import anthropic
-
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 
@@ -31,13 +29,9 @@ logging.basicConfig(
 
 load_dotenv()
 
-GMAIL_ADDRESS        = os.getenv("GMAIL_ADDRESS")
-GMAIL_APP_PASSWORD   = os.getenv("GMAIL_APP_PASSWORD")
-ANTHROPIC_API_KEY    = os.getenv("ANTHROPIC_API_KEY")
-TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM_NUMBER   = os.getenv("TWILIO_FROM_NUMBER")
-MY_PHONE_NUMBER      = os.getenv("MY_PHONE_NUMBER")
+GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 
 if not all([GMAIL_ADDRESS, GMAIL_APP_PASSWORD, ANTHROPIC_API_KEY]):
     logging.error("Missing values in .env file")
@@ -46,7 +40,7 @@ if not all([GMAIL_ADDRESS, GMAIL_APP_PASSWORD, ANTHROPIC_API_KEY]):
 CHECK_INTERVAL = 60
 DATABASE_FILE  = "email_agent.db"
 
-# ── System Prompt — Real Portfolio Context ─────────────────────────────────────
+# ── System Prompt ──────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """
 You are the email assistant for Prashant Subedi, a bilingual freelance photographer 
@@ -84,7 +78,7 @@ and web developer based in Osaka, Japan.
    - Concerts, live events, sports, festivals, birthday parties
    - Full event coverage, 50+ edited photos, quick turnaround
 
-Additional notes on pricing:
+Additional notes:
 - All prices are starting points — final price depends on duration and location
 - Bilingual sessions (English + Japanese) at no extra charge
 - Photos delivered via Google Drive within 5 days
@@ -100,8 +94,8 @@ Portfolio: https://photography-site-bay-three.vercel.app/it-portfolio/
 
 == PRASHANT'S PERSONALITY & TONE ==
 - Warm, friendly, and genuine — never stiff or corporate
-- Bilingual — reply in the same language the client used
-- If email is in Japanese → reply in Japanese
+- Bilingual — ALWAYS reply in the same language the client used
+- If email is in Japanese → reply 100% in Japanese
 - If email is in English → reply in English
 - If email mixes both → reply in English with Japanese phrases where natural
 - Always honest about availability and pricing
@@ -112,7 +106,8 @@ Portfolio: https://photography-site-bay-three.vercel.app/it-portfolio/
 When you receive an email, do TWO things:
 
 1. CLASSIFY into exactly one category:
-   - INQUIRY: Questions about photography services, pricing, booking, availability, web dev services
+   - INQUIRY: Questions about photography services, pricing, booking, or availability
+   - WEB_DEV: Questions about web development, websites, coding, IT services, web design
    - BOOKING: Someone ready to book a specific session with date/time
    - COMPLAINT: Dissatisfaction or problem with a past session
    - SPAM: Promotional emails, scams, irrelevant messages
@@ -123,9 +118,9 @@ When you receive an email, do TWO things:
    - Sounds like Prashant himself wrote it — warm and genuine
    - Answers the specific question asked
    - Mentions relevant pricing if they asked about services
-   - Suggests a specific next step (check portfolio, book via contact form, etc.)
+   - Suggests a specific next step
    - Is 3-5 sentences maximum
-   - Is in the same language as the original email
+   - MUST be in the same language as the original email
 
 Format your response EXACTLY like this:
 CATEGORY: [category]
@@ -197,14 +192,10 @@ def save_email_history(sender, subject, body, category, reply, status):
     conn.commit()
     conn.close()
 
-# ── SMS Notification ───────────────────────────────────────────────────────────
+# ── Notification ───────────────────────────────────────────────────────────────
 
-def send_sms_notification(sender, subject, category):
-    """
-    Send an email notification to Prashant's personal Gmail
-    when an important inquiry arrives.
-    Gmail app on phone will notify instantly.
-    """
+def send_notification(sender, subject, category):
+    """Send email notification to personal Gmail when inquiry arrives."""
     try:
         msg = email.mime.multipart.MIMEMultipart()
         msg["From"]    = GMAIL_ADDRESS
@@ -229,7 +220,7 @@ Check prashant.captures.photo@gmail.com for details.
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             server.send_message(msg)
 
-        logging.info(f"Email notification sent to prashantsubedi718@gmail.com")
+        logging.info("Notification sent to prashantsubedi718@gmail.com")
 
     except Exception as e:
         logging.error(f"Notification failed: {e}")
@@ -284,6 +275,7 @@ def send_reply(to_address, original_subject, reply_body):
 # ── Main Check ─────────────────────────────────────────────────────────────────
 
 def check_and_reply():
+    """One full cycle — read inbox, analyze, reply, save to database."""
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -318,11 +310,20 @@ def check_and_reply():
             else:
                 sender_email = sender.strip()
 
+            # Skip own emails
             if sender_email.lower() == GMAIL_ADDRESS.lower():
                 logging.info("Skipping own email")
                 mark_as_replied(email_id_str)
                 continue
 
+            # Skip noreply and automated addresses
+            skip_patterns = ["noreply", "no-reply", "donotreply", "mailer-daemon", "postmaster"]
+            if any(pattern in sender_email.lower() for pattern in skip_patterns):
+                logging.info(f"Skipping automated email from {sender_email}")
+                mark_as_replied(email_id_str)
+                continue
+
+            # Get body
             body = ""
             if msg.is_multipart():
                 for part in msg.walk():
@@ -334,28 +335,64 @@ def check_and_reply():
 
             body = body[:2000]
 
-            logging.info(f"Processing: {sender_email} — {subject}")
+            # ── Formspree handler ──────────────────────────────────────────────
+            # When someone submits your contact form, Formspree emails you
+            # We extract the real client email and message from the body
+
+            real_sender_email = sender_email
+            real_body         = body
+
+            if "formspree" in body.lower() or "submitted a form" in body.lower():
+                logging.info("Detected Formspree contact form submission")
+
+                # Extract real client email
+                email_match = re.search(
+                    r'email[:\s]+([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})',
+                    body, re.IGNORECASE
+                )
+                name_match = re.search(r'name[:\s]+(.+)', body, re.IGNORECASE)
+                msg_match  = re.search(
+                    r'message[:\s]+(.+?)(?=\n\n|\Z)',
+                    body, re.IGNORECASE | re.DOTALL
+                )
+
+                if email_match:
+                    real_sender_email = email_match.group(1).strip()
+                    logging.info(f"Extracted real client email: {real_sender_email}")
+
+                client_name = name_match.group(1).strip() if name_match else "Client"
+                client_msg  = msg_match.group(1).strip() if msg_match else body
+                real_body   = f"Name: {client_name}\nMessage: {client_msg}"
+                subject     = f"Contact Form: {subject}"
+
+            logging.info(f"Processing: {real_sender_email} — {subject}")
 
             try:
-                claude_text     = get_claude_reply(sender_email, subject, body)
+                claude_text     = get_claude_reply(real_sender_email, subject, real_body)
                 category, reply = parse_claude_response(claude_text)
                 logging.info(f"Category: {category}")
 
                 if category == "SPAM" or reply == "No reply needed.":
                     logging.info("Skipping spam")
-                    save_email_history(sender_email, subject, body, category, "", "skipped_spam")
+                save_email_history(real_sender_email, subject, real_body, category, "", "skipped_spam")
+                mark_as_replied(email_id_str)
+                continue
+
+                # Hold web dev inquiries — don't reply yet
+                if category == "WEB_DEV":
+                    logging.info(f"Web dev inquiry from {real_sender_email} — holding, no reply sent")
+                    save_email_history(real_sender_email, subject, real_body, category, "", "held_web_dev")
                     mark_as_replied(email_id_str)
                     continue
 
-                send_reply(sender_email, subject, reply)
-                logging.info(f"Reply sent to {sender_email}")
+                send_reply(real_sender_email, subject, reply)
+                logging.info(f"Reply sent to {real_sender_email}")
 
-                save_email_history(sender_email, subject, body, category, reply, "sent")
+                save_email_history(real_sender_email, subject, real_body, category, reply, "sent")
                 mark_as_replied(email_id_str)
 
-                # Send SMS only for inquiries and bookings
                 if category in ["INQUIRY", "BOOKING"]:
-                    send_sms_notification(sender_email, subject, category)
+                    send_notification(real_sender_email, subject, category)
 
                 time.sleep(2)
 
